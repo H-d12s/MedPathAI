@@ -3,7 +3,6 @@ import uuid
 import json
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
@@ -39,39 +38,39 @@ app.add_middleware(
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ChatRequest(BaseModel):
-    message:            str
-    user_id:            str
-    session_id:         Optional[str] = None
-    selected_hospital:  Optional[str] = None
-    user_lat:           Optional[float] = None
-    user_lon:           Optional[float] = None
+    message:           str
+    user_id:           str
+    session_id:        Optional[str]  = None
+    selected_hospital: Optional[str]  = None
+    user_lat:          Optional[float] = None
+    user_lon:          Optional[float] = None
 
 class RegisterRequest(BaseModel):
-    user_id:                  str
-    name:                     str
-    age:                      int
-    gender:                   str
-    city:                     str
-    blood_group:              Optional[str] = None
-    comorbidities:            list[str] = []
-    insurance_provider:       Optional[str] = None
-    insurance_coverage:       Optional[int] = 0
-    income_band:              Optional[str] = None
-    emergency_contact_name:   Optional[str] = None
-    emergency_contact_phone:  Optional[str] = None
+    user_id:                 str
+    name:                    str
+    age:                     int
+    gender:                  str
+    city:                    str
+    blood_group:             Optional[str]  = None
+    comorbidities:           list[str]      = []
+    insurance_provider:      Optional[str]  = None
+    insurance_coverage:      Optional[int]  = 0
+    income_band:             Optional[str]  = None
+    emergency_contact_name:  Optional[str]  = None
+    emergency_contact_phone: Optional[str]  = None
 
 class FinancialsRequest(BaseModel):
     user_id:          str
     employment_type:  str
     monthly_income:   int
-    existing_emi:     int = 0
+    existing_emi:     int   = 0
     cibil_score:      int
     employment_years: float
 
 class LoanApplyRequest(BaseModel):
-    user_id:    str
-    session_id: str
-    loan_amount: int
+    user_id:       str
+    session_id:    str
+    loan_amount:   int
     tenure_months: int
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -127,12 +126,14 @@ async def save_financials(req: FinancialsRequest):
 
     financials = req.dict()
 
-    # Pre-calculate max loan eligible
-    max_loan = req.monthly_income * 10
-    foir_headroom = (req.monthly_income * 0.50 - req.existing_emi) / req.monthly_income
-    financials["max_loan_eligible"] = min(max_loan, 3000000)
+    # Pre-calculate derived fields
+    max_loan      = req.monthly_income * 10
+    foir_headroom = (req.monthly_income * 0.50 - req.existing_emi) / req.monthly_income \
+                    if req.monthly_income > 0 else 0.0
+    financials["max_loan_eligible"] = min(max_loan, 3_000_000)
     financials["foir_headroom"]     = round(foir_headroom, 2)
     financials["income_stable"]     = True
+    # employment_years is in financials dict — save_user_financials persists it via risk_band
 
     success = save_user_financials(req.user_id, financials)
     if not success:
@@ -160,10 +161,9 @@ async def upload_document(
     """
     contents = await file.read()
 
-    # Save metadata
+    # Save metadata first (before extraction attempt)
     save_document_metadata(user_id, doc_type, file.filename, extracted=False)
 
-    # Try to extract data with Gemini
     try:
         import base64
         b64 = base64.b64encode(contents).decode()
@@ -172,46 +172,38 @@ async def upload_document(
         This is a {doc_type} document from India.
         Extract the following financial information and return ONLY valid JSON:
         {{
-          "monthly_income": <integer or null>,
-          "annual_income":  <integer or null>,
-          "income_stable":  <true/false>,
-          "cibil_score":    <integer or null>,
-          "existing_emi":   <integer or null>,
-          "employer":       <string or null>,
+          "monthly_income":   <integer or null>,
+          "annual_income":    <integer or null>,
+          "income_stable":    <true/false>,
+          "cibil_score":      <integer or null>,
+          "existing_emi":     <integer or null>,
+          "employer":         <string or null>,
           "employment_years": <float or null>
         }}
-        Return ONLY JSON. No explanation.
+        Return ONLY JSON. No explanation. No markdown.
         """
 
-        # Detect file type and send accordingly
         filename = file.filename.lower()
 
         if filename.endswith(".pdf"):
-            response = gemini.generate_content([
-                {"mime_type": "application/pdf", "data": b64},
-                extract_prompt
-            ])
+            mime = "application/pdf"
         elif filename.endswith(".png"):
-            response = gemini.generate_content([
-                {"mime_type": "image/png", "data": b64},
-                extract_prompt
-            ])
+            mime = "image/png"
         elif filename.endswith((".jpg", ".jpeg")):
-            response = gemini.generate_content([
-                {"mime_type": "image/jpeg", "data": b64},
-                extract_prompt
-            ])
+            mime = "image/jpeg"
         elif filename.endswith(".webp"):
-            response = gemini.generate_content([
-                {"mime_type": "image/webp", "data": b64},
-                extract_prompt
-            ])
+            mime = "image/webp"
         else:
             return {
                 "success":   False,
                 "extracted": {},
                 "message":   "Unsupported file type. Please upload PDF, JPG, PNG, or WEBP."
             }
+
+        response = gemini.generate_content([
+            {"mime_type": mime, "data": b64},
+            extract_prompt,
+        ])
 
         raw = response.text.strip()
         if raw.startswith("```"):
@@ -222,7 +214,7 @@ async def upload_document(
 
         extracted = json.loads(raw)
 
-        # Update financials in DB
+        # Merge extracted data into existing financials
         current = get_user_financials(user_id) or {}
         for key, val in extracted.items():
             if val is not None:
@@ -261,7 +253,6 @@ async def chat(req: ChatRequest):
     Main chat endpoint.
     Runs the full LangGraph pipeline and returns structured response.
     """
-    # Generate session_id if not provided
     session_id = req.session_id or str(uuid.uuid4())
 
     # Load user profile
@@ -272,14 +263,14 @@ async def chat(req: ChatRequest):
             detail="User profile not found. Please complete registration first."
         )
 
-    # Load financials
+    # Load financials (may be None if not yet uploaded)
     financials = get_user_financials(req.user_id)
 
     # Load conversation history from session
     session_state = get_session(session_id)
     history = session_state.get("conversation_history", []) if session_state else []
 
-    # Run the graph
+    # Run the LangGraph pipeline
     result = await run_graph(
         user_input           = req.message,
         user_profile         = profile,
@@ -297,23 +288,20 @@ async def chat(req: ChatRequest):
         "assistant": result.get("explanation", ""),
     })
 
-    # Save session
+    # Save session — pass user_id so FK is satisfied
     save_session(session_id, {
         "conversation_history": history,
         "last_hospitals":       result.get("hospitals", []),
         "last_procedure":       result.get("procedure"),
         "last_city":            result.get("city"),
-    })
+    }, user_id=req.user_id)
 
     # Log query
     log_query(session_id, req.user_id, {
         "user_input":    req.message,
         "procedure":     result.get("procedure"),
-        "icd10_code":    result.get("icd10_code"),
         "city":          result.get("city"),
         "is_emergency":  result.get("is_emergency"),
-        "hospitals":     result.get("hospitals", []),
-        "cost_result":   result.get("cost_result"),
         "nodes_visited": result.get("graph_path", "").split(" → "),
     })
 
@@ -333,7 +321,6 @@ async def apply_loan(req: LoanApplyRequest):
     Runs eligibility check and marks as sent to PFL.
     """
     financials = get_user_financials(req.user_id)
-    profile    = get_user_profile(req.user_id)
 
     if not financials:
         return {
@@ -346,19 +333,16 @@ async def apply_loan(req: LoanApplyRequest):
 
     eligibility = check_loan_eligibility(
         loan_amount      = req.loan_amount,
-        monthly_income   = financials.get("monthly_income", 0),
-        existing_emi     = financials.get("existing_emi", 0),
-        cibil_score      = financials.get("cibil_score", 700),
-        employment_years = financials.get("employment_years", 2),
+        monthly_income   = financials.get("monthly_income") or 0,
+        existing_emi     = financials.get("existing_emi") or 0,
+        cibil_score      = financials.get("cibil_score") or 700,
+        employment_years = financials.get("employment_years") or 2.0,
     )
 
     pfl_options = calculate_pfl_options(req.loan_amount)
 
-    # Log the application
     log_query(req.session_id, req.user_id, {
-        "user_input":  f"Loan application for ₹{req.loan_amount:,}",
-        "cost_result": {"total_min": req.loan_amount, "total_max": req.loan_amount,
-                        "confidence": 1.0},
+        "user_input":    f"Loan application for ₹{req.loan_amount:,}",
         "nodes_visited": ["loan_apply"],
     })
 
@@ -369,8 +353,10 @@ async def apply_loan(req: LoanApplyRequest):
         "pfl_options":  pfl_options,
         "message":      eligibility["recommendation"],
         "sent_to_pfl":  eligibility["decision"] in ["GREEN", "YELLOW"],
-        "pfl_contact":  "A Poonawalla Fincorp representative will contact you within 24 hours."
-                        if eligibility["decision"] in ["GREEN", "YELLOW"] else None,
+        "pfl_contact":  (
+            "A Poonawalla Fincorp representative will contact you within 24 hours."
+            if eligibility["decision"] in ["GREEN", "YELLOW"] else None
+        ),
     }
 
 # ══════════════════════════════════════════════════════════════════════════════

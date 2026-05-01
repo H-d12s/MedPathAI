@@ -1,26 +1,47 @@
-import pandas as pd
 import os
+import pandas as pd
 from math import radians, sin, cos, sqrt, atan2
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
-# ── Load CSVs once at startup ──────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+load_dotenv()
 
-hospitals_df  = pd.read_csv(os.path.join(DATA_DIR, "hospital_rows.csv"))
-procedures_df = pd.read_csv(os.path.join(DATA_DIR, "procedures_rows.csv"))
-cities_df     = pd.read_csv(os.path.join(DATA_DIR, "cities_rows.csv"))
+# ── Supabase client ────────────────────────────────────────────────────────────
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Normalize city_tier: tier1 → metro
-hospitals_df["city_tier"] = hospitals_df["city_tier"].replace({"tier1": "metro"})
+# ── Table names — change here if your Supabase table is named differently ─────
+#    Common mistake: CSV is "hospital_rows.csv" but Supabase table might be
+#    "hospitals" (plural). Check your Supabase dashboard and update this:
+HOSPITALS_TABLE  = "hospital"    # ← change to "hospital" if that's your table name
+PROCEDURES_TABLE = "procedures"
+CITIES_TABLE     = "cities"
 
-# Normalize city names to lowercase for matching
-hospitals_df["city_lower"]  = hospitals_df["city"].str.lower().str.strip()
-cities_df["city_lower"]     = cities_df["city"].str.lower().str.strip()
+# ── Load data from Supabase at startup ────────────────────────────────────────
+def _load_table(table_name: str) -> pd.DataFrame:
+    """Load entire table from Supabase into pandas DataFrame."""
+    res = supabase.table(table_name).select("*").execute()
+    return pd.DataFrame(res.data)
+
+print("⏳ Loading data from Supabase...")
+
+hospitals_df  = _load_table(HOSPITALS_TABLE)
+procedures_df = _load_table(PROCEDURES_TABLE)
+cities_df     = _load_table(CITIES_TABLE)
+
+# Normalize city_tier: tier1 → metro (handles both naming conventions)
+if "city_tier" in hospitals_df.columns:
+    hospitals_df["city_tier"] = hospitals_df["city_tier"].replace({"tier1": "metro"})
+
+# Lowercase for matching
+hospitals_df["city_lower"]      = hospitals_df["city"].str.lower().str.strip()
+cities_df["city_lower"]         = cities_df["city"].str.lower().str.strip()
 procedures_df["procedure_name"] = procedures_df["procedure_name"].str.lower().str.strip()
 
 print(f"✅ Loaded {len(hospitals_df)} hospitals, "
       f"{len(procedures_df)} procedures, "
-      f"{len(cities_df)} cities")
+      f"{len(cities_df)} cities from Supabase")
 
 # ── Supported procedures ───────────────────────────────────────────────────────
 SUPPORTED_PROCEDURES = [
@@ -64,7 +85,6 @@ def haversine(lat1, lon1, lat2, lon2):
 def get_city_info(city_name: str) -> dict | None:
     match = cities_df[cities_df["city_lower"] == city_name.lower().strip()]
     if match.empty:
-        # fuzzy fallback — check if city_name is contained
         match = cities_df[cities_df["city_lower"].str.contains(
             city_name.lower().strip(), na=False)]
     if match.empty:
@@ -75,8 +95,8 @@ def get_city_info(city_name: str) -> dict | None:
         "city":      row["city"],
         "state":     row["state"],
         "tier":      row["tier"],
-        "latitude":  row["latitude"],
-        "longitude": row["longitude"],
+        "latitude":  float(row["latitude"]),
+        "longitude": float(row["longitude"]),
     }
 
 # ── Get hospitals by city ──────────────────────────────────────────────────────
@@ -95,20 +115,30 @@ def get_procedure_for_hospital(hospital_id: str, procedure_name: str) -> dict | 
         return None
     row = match.iloc[0]
     return {
-        "procedure_id":                row["procedure_id"],
-        "min_cost_inr":                int(row["min_cost_inr"]),
-        "max_cost_inr":                int(row["max_cost_inr"]),
-        "avg_cost_inr":                int(row["avg_cost_inr"]),
-        "success_rate":                float(row["success_rate"]),
-        "avg_recovery_days":           int(row["avg_recovery_days"]),
-        "insurance_covered":           bool(row["insurance_covered"]),
-        "specialists_count":           int(row["specialists_count"]),
-        "specialization_match":        bool(row["specialization_match"]),
-        "annual_procedure_volume":     int(row["annual_procedure_volume"]),
-        "procedure_waiting_time_days": int(row["procedure_waiting_time_days"]),
-        "avg_specialist_availability": float(row["avg_specialist_availability"]),
+        "procedure_id":                   row["procedure_id"],
+        "min_cost_inr":                   int(row["min_cost_inr"]),
+        "max_cost_inr":                   int(row["max_cost_inr"]),
+        "avg_cost_inr":                   int(row["avg_cost_inr"]),
+        "success_rate":                   float(row["success_rate"]),
+        "avg_recovery_days":              int(row["avg_recovery_days"]),
+        # FIX: Supabase returns actual bools; CSV has 'true'/'false' strings.
+        # Support both so local dev (pandas from CSV) and prod (Supabase) both work.
+        "insurance_covered":              _to_bool(row["insurance_covered"]),
+        "specialists_count":              int(row["specialists_count"]),
+        "specialization_match":           _to_bool(row["specialization_match"]),
+        "annual_procedure_volume":        int(row["annual_procedure_volume"]),
+        "procedure_waiting_time_days":    int(row["procedure_waiting_time_days"]),
+        "avg_specialist_availability":    float(row["avg_specialist_availability"]),
         "specialization_relevance_score": float(row["specialization_relevance_score"]),
     }
+
+def _to_bool(val) -> bool:
+    """Handle both Python bools (from Supabase) and string 'true'/'false' (from CSV)."""
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() == "true"
+    return bool(val)
 
 # ── Score a single hospital ────────────────────────────────────────────────────
 def score_hospital(hospital: dict, procedure: dict, budget: int | None,
@@ -117,26 +147,26 @@ def score_hospital(hospital: dict, procedure: dict, budget: int | None,
     # Emergency: only care about ICU + 24x7
     if is_emergency:
         score = 0.0
-        if hospital.get("emergency_24x7"):    score += 40
-        if hospital.get("inhouse_critical_care"): score += 30
-        if hospital.get("icu_beds", 0) > 50:  score += 20
-        score += (hospital.get("rating", 3) / 5.0) * 10
+        if _to_bool(hospital.get("emergency_24x7")):        score += 40
+        if _to_bool(hospital.get("inhouse_critical_care")): score += 30
+        if hospital.get("icu_beds", 0) > 50:                score += 20
+        score += (float(hospital.get("rating", 3)) / 5.0) * 10
         return round(score, 2)
 
     # Standard scoring
-    spec   = procedure["specialization_relevance_score"] * 30
-    rating = (hospital.get("rating", 3) / 5.0) * 20
-    nabh   = 15 if hospital.get("nabh_accredited") else 0
-    insur  = 5  if procedure["insurance_covered"] else 0
+    spec     = procedure["specialization_relevance_score"] * 30
+    rating   = (float(hospital.get("rating", 3)) / 5.0) * 20
+    nabh     = 15 if _to_bool(hospital.get("nabh_accredited")) else 0
+    insur    = 5  if procedure["insurance_covered"] else 0
 
     # Budget fit
     if budget and procedure["min_cost_inr"] > budget:
-        budget_score = 0   # over budget — still show but score 0 here
+        budget_score = 0
     else:
         budget_score = 20
 
     # Waiting time (lower is better, max 30 days reference)
-    wait   = procedure["procedure_waiting_time_days"]
+    wait       = procedure["procedure_waiting_time_days"]
     wait_score = max(0, (1 - wait / 30)) * 10
 
     # Deadline filter
@@ -162,7 +192,7 @@ def search_hospitals(
     if city_hospitals.empty:
         return []
 
-    results = []
+    results     = []
     over_budget = []
 
     for _, hosp_row in city_hospitals.iterrows():
@@ -173,34 +203,37 @@ def search_hospitals(
 
         score = score_hospital(hosp, proc, budget, deadline_days, is_emergency)
         if score == -1:
-            continue  # misses deadline — exclude
+            continue  # misses deadline
 
         # Distance
         if user_lat and user_lon:
-            dist = haversine(user_lat, user_lon,
-                             hosp["latitude"], hosp["longitude"])
+            try:
+                dist = haversine(user_lat, user_lon,
+                                 float(hosp["latitude"]), float(hosp["longitude"]))
+            except (ValueError, TypeError):
+                dist = None
         else:
             dist = None
 
         entry = {
-            "hospital_id":         hosp["hospital_id"],
-            "hospital_name":       hosp["hospital_name"],
-            "chain":               hosp["chain"],
-            "city":                hosp["city"],
-            "rating":              hosp["rating"],
-            "nabh_accredited":     bool(hosp["nabh_accredited"]),
-            "jci_accredited":      bool(hosp["jci_accredited"]),
-            "beds":                int(hosp["beds"]),
-            "icu_beds":            int(hosp["icu_beds"]),
-            "emergency_24x7":      bool(hosp["emergency_24x7"]),
-            "ambulance_available": bool(hosp["ambulance_available"]),
-            "cashless_insurance":  bool(hosp["cashless_insurance"]),
-            "inhouse_critical_care": bool(hosp["inhouse_critical_care"]),
-            "consultation_fee_inr": int(hosp["consultation_fee_inr"]),
-            "distance_km":         round(dist, 1) if dist else None,
-            "score":               score,
-            "over_budget":         bool(budget and proc["min_cost_inr"] > budget),
-            "procedure":           proc,
+            "hospital_id":           hosp["hospital_id"],
+            "hospital_name":         hosp["hospital_name"],
+            "chain":                 hosp["chain"],
+            "city":                  hosp["city"],
+            "rating":                float(hosp.get("rating", 0)),
+            "nabh_accredited":       _to_bool(hosp.get("nabh_accredited")),
+            "jci_accredited":        _to_bool(hosp.get("jci_accredited")),
+            "beds":                  int(hosp.get("beds", 0)),
+            "icu_beds":              int(hosp.get("icu_beds", 0)),
+            "emergency_24x7":        _to_bool(hosp.get("emergency_24x7")),
+            "ambulance_available":   _to_bool(hosp.get("ambulance_available")),
+            "cashless_insurance":    _to_bool(hosp.get("cashless_insurance")),
+            "inhouse_critical_care": _to_bool(hosp.get("inhouse_critical_care")),
+            "consultation_fee_inr":  int(hosp.get("consultation_fee_inr", 0)),
+            "distance_km":           round(dist, 1) if dist is not None else None,
+            "score":                 score,
+            "over_budget":           bool(budget and proc["min_cost_inr"] > budget),
+            "procedure":             proc,
         }
 
         if entry["over_budget"] and not is_emergency:
@@ -212,7 +245,7 @@ def search_hospitals(
     results.sort(key=lambda x: x["score"], reverse=True)
     top = results[:limit]
 
-    # Always add best over-budget hospital if we have room or it's top rated
+    # Always add best over-budget hospital
     if over_budget:
         over_budget.sort(key=lambda x: x["score"], reverse=True)
         best_over = over_budget[0]
@@ -249,7 +282,7 @@ def calculate_cost_breakdown(
     elif age and age > 50:
         multiplier += 0.05
 
-    # Confidence — widen range if missing info
+    # Confidence — widen range if info is missing
     missing = sum(1 for v in [age] if v is None)
     margin  = 0.15 + missing * 0.05
 
@@ -266,19 +299,20 @@ def calculate_cost_breakdown(
         }
 
     # Insurance gap
+    insurance_coverage = insurance_coverage or 0
     you_pay_min = max(0, adj_min - insurance_coverage)
     you_pay_max = max(0, adj_max - insurance_coverage)
 
     return {
-        "breakdown":        breakdown,
-        "total_min":        adj_min,
-        "total_max":        adj_max,
-        "total_avg":        adj_avg,
-        "confidence":       round(1.0 - margin, 2),
-        "insurance_covers": insurance_coverage,
-        "you_pay_min":      you_pay_min,
-        "you_pay_max":      you_pay_max,
-        "risk_flags":       risk_flags,
+        "breakdown":          breakdown,
+        "total_min":          adj_min,
+        "total_max":          adj_max,
+        "total_avg":          adj_avg,
+        "confidence":         round(1.0 - margin, 2),
+        "insurance_covers":   insurance_coverage,
+        "you_pay_min":        you_pay_min,
+        "you_pay_max":        you_pay_max,
+        "risk_flags":         risk_flags,
         "multiplier_applied": round(multiplier, 2),
     }
 
@@ -287,7 +321,7 @@ PFL_RATE_ANNUAL = 0.0999
 
 def calculate_pfl_emi(principal: int, months: int) -> int:
     r = PFL_RATE_ANNUAL / 12
-    if principal <= 0:
+    if principal <= 0 or months <= 0:
         return 0
     emi = principal * r * (1 + r)**months / ((1 + r)**months - 1)
     return int(round(emi))
@@ -326,7 +360,6 @@ def check_loan_eligibility(
     elif foir <= 0.40: score += 25
     elif foir <= 0.50: score += 10
     else:
-        score += 0
         flags.append(f"FOIR too high: {round(foir*100)}% (limit 50%)")
 
     # CIBIL scoring
@@ -340,13 +373,12 @@ def check_loan_eligibility(
     if employment_years >= 3:   score += 20
     elif employment_years >= 1: score += 12
     else:
-        score += 0
         flags.append("Less than 1 year employment — stability concern")
 
     # Loan vs income
     if loan_amount <= max_eligible: score += 10
     else:
-        flags.append(f"Loan amount exceeds 10x monthly income")
+        flags.append("Loan amount exceeds 10x monthly income")
 
     # Decision
     if score >= 70:   decision = "GREEN"
@@ -360,13 +392,13 @@ def check_loan_eligibility(
     }
 
     return {
-        "score":            score,
-        "decision":         decision,
-        "foir":             round(foir, 2),
-        "foir_pct":         f"{round(foir * 100)}%",
-        "max_eligible":     min(max_eligible, 3000000),
-        "proposed_emi":     proposed_emi,
-        "total_emi_after":  total_emi,
-        "flags":            flags,
-        "recommendation":   pfl_recommendation[decision],
+        "score":           score,
+        "decision":        decision,
+        "foir":            round(foir, 2),
+        "foir_pct":        f"{round(foir * 100)}%",
+        "max_eligible":    min(max_eligible, 3000000),
+        "proposed_emi":    proposed_emi,
+        "total_emi_after": total_emi,
+        "flags":           flags,
+        "recommendation":  pfl_recommendation[decision],
     }
