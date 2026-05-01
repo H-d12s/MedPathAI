@@ -1,5 +1,4 @@
-from typing import TypedDict, Optional, final
-from unittest import result
+from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, END
 
 from nodes.intent   import run_intent_node
@@ -13,6 +12,10 @@ class MedState(TypedDict, total=False):
     user_input:           str
     session_id:           str
     user_id:              str
+
+    # GPS coordinates (passed from ChatRequest, used in provider_node)
+    user_lat:             Optional[float]
+    user_lon:             Optional[float]
 
     # User context (loaded from Supabase)
     user_profile:         dict
@@ -121,7 +124,7 @@ def build_graph():
         "provider": "provider",
     })
 
-    # clarify → back to intent
+    # clarify → END (frontend re-sends with user's answer appended to history)
     g.add_edge("clarify", END)
 
     # Linear: provider → cost → response → END
@@ -139,14 +142,14 @@ print("✅ LangGraph compiled successfully")
 
 # ── Helper: run full pipeline ──────────────────────────────────────────────────
 async def run_graph(
-    user_input:    str,
-    user_profile:  dict,
-    user_financials: dict = None,
-    session_id:    str = None,
+    user_input:           str,
+    user_profile:         dict,
+    user_financials:      dict = None,
+    session_id:           str  = None,
     conversation_history: list = None,
-    selected_hospital: str = None,
-    user_lat: float = None,   # ADD
-    user_lon: float = None,   # ADD
+    selected_hospital:    str  = None,
+    user_lat:             float = None,
+    user_lon:             float = None,
 ) -> dict:
     """
     Main entry point called by FastAPI.
@@ -170,7 +173,4 @@ async def run_graph(
     }
 
     result = await graph.ainvoke(initial_state)
-    final = result.get("final_response", {})
-    if not final:
-        final = result.get("final_response", {})
-    return final
+    return result.get("final_response", {})
