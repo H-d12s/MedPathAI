@@ -19,10 +19,16 @@ SUPPORTED_PROCEDURES = [
 
 # ── Emergency symptom keywords ─────────────────────────────────────────────────
 EMERGENCY_KEYWORDS = [
-    "chest pain", "heart attack", "stroke", "can't breathe",
+    "heart attack", "stroke", "can't breathe",
     "cannot breathe", "difficulty breathing", "severe bleeding",
     "unconscious", "collapsed", "seizure", "paralysis",
     "crushing pain", "left arm pain", "jaw pain", "sudden numbness"
+]
+
+HIGH_RISK_CHEST_PAIN_TERMS = [
+    "arm", "left arm", "jaw", "back", "spreading", "radiating",
+    "crushing", "walking", "walk", "climb", "stairs",
+    "sweating", "breath", "nausea"
 ]
 
 INTENT_PROMPT = """
@@ -56,6 +62,8 @@ Extract and return ONLY a valid JSON object with these fields:
   "possible_causes": ["<medical condition 1>", "<medical condition 2>"],
   "icd10_code": "<ICD-10 code for most likely condition, or null>",
   "symptom_summary": "<1 sentence summary of what user described>",
+  "recommendation_ready": <true only when enough symptom detail exists to show hospitals>,
+  "emergency_confidence": <float 0.0-1.0 estimating confidence of immediate emergency>,
   "follow_up_answers": {{
     "pain_type": "<if mentioned>",
     "pain_location": "<if mentioned>",
@@ -66,11 +74,14 @@ Extract and return ONLY a valid JSON object with these fields:
 
 RULES:
 1. If user directly mentions a procedure or condition, set ambiguity_score < 0.3
-2. If user only describes vague symptoms, set ambiguity_score > 0.6 and ask ONE clarifying question
-3. If symptoms match emergency keywords (chest pain spreading to arm, difficulty breathing, stroke signs), set is_emergency = true
-4. Always use the profile city if user does not mention a city
-5. possible_causes should have 2-3 entries max
-6. Return ONLY the JSON. No explanation. No markdown. No preamble.
+2. If user only describes a symptom, do NOT recommend hospitals yet. Set recommendation_ready=false, ambiguity_score > 0.6, and ask ONE natural follow-up question.
+3. For chest pain alone, recommendation_ready=false and is_emergency=false. Ask about pain type, radiation to arm/jaw/back, exertion, duration, breathlessness, sweating, and nausea.
+4. Set is_emergency=true only when red flags are present with high confidence, such as chest tightness/pressure radiating to arm/jaw/back, worse on exertion, severe breathing trouble, stroke signs, collapse, or uncontrolled bleeding.
+5. If is_emergency=true, set emergency_confidence >= 0.85. Otherwise keep emergency_confidence below 0.85.
+6. Set recommendation_ready=true when either the user asks for a specific procedure/hospital search, or follow-up answers provide enough severity/context to identify likely causes and urgency.
+7. Always use the profile city if user does not mention a city
+8. possible_causes should have 2-3 entries max
+9. Return ONLY the JSON. No explanation. No markdown. No preamble.
 """
 
 def run_intent_node(state: dict) -> dict:
@@ -130,19 +141,44 @@ def run_intent_node(state: dict) -> dict:
             "possible_causes":     [],
             "icd10_code":          None,
             "symptom_summary":     user_input,
+            "recommendation_ready": False,
+            "emergency_confidence": 0.0,
             "follow_up_answers":   {},
         }
 
     # Emergency override — check keywords even if Gemini missed it
     lower_input = user_input.lower()
-    if any(kw in lower_input for kw in EMERGENCY_KEYWORDS):
+    history_text = " ".join(
+        turn.get("user", "")
+        for turn in history[-4:]
+    ).lower()
+    context_text = f"{history_text} {lower_input}"
+    has_chest_pain = "chest pain" in context_text or "chest tightness" in context_text
+    high_risk_chest = has_chest_pain and any(term in context_text for term in HIGH_RISK_CHEST_PAIN_TERMS)
+
+    if any(kw in lower_input for kw in EMERGENCY_KEYWORDS) or high_risk_chest:
         extracted["is_emergency"] = True
+        extracted["emergency_confidence"] = max(extracted.get("emergency_confidence", 0) or 0, 0.9)
         extracted["ambiguity_score"] = min(extracted.get("ambiguity_score", 0), 0.3)
+        extracted["recommendation_ready"] = True
 
     # If emergency — don't ask clarifying questions, go straight to hospitals
-    if extracted.get("is_emergency"):
+    emergency_confidence = extracted.get("emergency_confidence", 0) or 0
+
+    if extracted.get("is_emergency") and emergency_confidence >= 0.85:
         extracted["ambiguity_score"] = 0.1
         extracted["clarifying_question"] = None
+        extracted["recommendation_ready"] = True
+
+    if "chest pain" in lower_input and not high_risk_chest and len(history) == 0:
+        extracted["is_emergency"] = False
+        extracted["emergency_confidence"] = 0.4
+        extracted["recommendation_ready"] = False
+        extracted["ambiguity_score"] = 0.9
+        extracted["clarifying_question"] = (
+            "I'm sorry you're dealing with that. Chest pain can have several causes, so let me ask a few quick questions first. "
+            "How would you describe the pain: sharp and stabbing, dull and pressure-like, burning, or tightness?"
+        )
 
     return {
         **state,
@@ -156,6 +192,8 @@ def run_intent_node(state: dict) -> dict:
         "possible_causes":      extracted.get("possible_causes", []),
         "icd10_code":           extracted.get("icd10_code"),
         "symptom_summary":      extracted.get("symptom_summary", user_input),
+        "recommendation_ready": extracted.get("recommendation_ready", False),
+        "emergency_confidence": extracted.get("emergency_confidence", 0),
         "follow_up_answers":    extracted.get("follow_up_answers", {}),
         "nodes_visited":        nodes_visited,
     }

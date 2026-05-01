@@ -1,5 +1,9 @@
 import os
 import uuid
+import base64
+import hashlib
+import hmac
+import secrets
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime
@@ -23,7 +27,59 @@ def to_uuid(user_id: str) -> str:
     continuity across restarts. Satisfies Supabase's uuid column type without
     any schema changes.
     """
-    return str(uuid.uuid5(uuid.NAMESPACE_DNS, user_id))
+    try:
+        return str(uuid.UUID(user_id))
+    except (TypeError, ValueError):
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, user_id))
+
+
+def hash_password(password: str) -> str:
+    """Create a salted one-way password hash."""
+    iterations = 210_000
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        iterations,
+    )
+    return "$".join([
+        "pbkdf2_sha256",
+        str(iterations),
+        base64.b64encode(salt).decode("ascii"),
+        base64.b64encode(digest).decode("ascii"),
+    ])
+
+
+def verify_password(password: str, password_hash: str | None) -> bool:
+    """Verify a password against a stored PBKDF2 hash."""
+    if not password_hash:
+        return False
+
+    try:
+        scheme, iterations, salt_b64, digest_b64 = password_hash.split("$", 3)
+        if scheme != "pbkdf2_sha256":
+            return False
+        salt = base64.b64decode(salt_b64)
+        expected = base64.b64decode(digest_b64)
+        actual = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            int(iterations),
+        )
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
+
+
+def _normalize_profile(data: dict, include_sensitive: bool = False) -> dict:
+    data = dict(data)
+    data["name"] = data.pop("full_name", None)
+    data["insurance_coverage"] = data.pop("insurance_coverage_inr", 0)
+    if not include_sensitive:
+        data.pop("password_hash", None)
+    return data
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -35,6 +91,7 @@ def save_user_profile(user_id: str, profile: dict) -> bool:
     try:
         data = {
             "user_id":                 to_uuid(user_id),
+            "email":                   profile.get("email"),
             "full_name":               profile.get("name"),
             "age":                     profile.get("age"),
             "gender":                  profile.get("gender"),
@@ -50,6 +107,8 @@ def save_user_profile(user_id: str, profile: dict) -> bool:
             "emergency_contact_phone": profile.get("emergency_contact_phone"),
             "updated_at":              datetime.utcnow().isoformat(),
         }
+        if profile.get("password_hash"):
+            data["password_hash"] = profile.get("password_hash")
         supabase.table("user_profiles").upsert(data, on_conflict="user_id").execute()
         return True
     except Exception as e:
@@ -68,13 +127,28 @@ def get_user_profile(user_id: str) -> dict | None:
             .execute()
         )
         if res.data:
-            data = res.data
-            data["name"]               = data.pop("full_name", None)
-            data["insurance_coverage"] = data.pop("insurance_coverage_inr", 0)
-            return data
+            return _normalize_profile(res.data)
         return None
     except Exception as e:
         print(f"❌ get_user_profile error: {e}")
+        return None
+
+
+def get_user_profile_by_email(email: str, include_sensitive: bool = False) -> dict | None:
+    """Load a user profile by case-insensitive email."""
+    try:
+        res = (
+            supabase.table("user_profiles")
+            .select("*")
+            .ilike("email", email.strip().lower())
+            .single()
+            .execute()
+        )
+        if res.data:
+            return _normalize_profile(res.data, include_sensitive=include_sensitive)
+        return None
+    except Exception as e:
+        print(f"get_user_profile_by_email error: {e}")
         return None
 
 
@@ -206,7 +280,7 @@ def save_session(session_id: str, state: dict, user_id: str = None) -> bool:
             
         }
         if user_id:
-            data["user_id"] = user_id
+            data["user_id"] = to_uuid(user_id)
 
         supabase.table("sessions").upsert(data, on_conflict="id").execute()
         return True

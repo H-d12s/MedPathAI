@@ -49,6 +49,44 @@ RULES:
 - Return plain text only — no markdown, no bullet points
 """
 
+RESPONSE_PROMPT = """
+You are MedPath AI, a warm and helpful Indian healthcare navigation assistant.
+Write a brief, clear, empathetic response before showing hospital cards.
+
+PATIENT INFO:
+- Name: {name}
+- Age: {age}
+- City: {city}
+- Comorbidities: {comorbidities}
+
+QUERY INFO:
+- Symptom/Query: {symptom_summary}
+- Procedure: {procedure}
+- Is Emergency: {is_emergency}
+- Possible Causes: {possible_causes}
+
+RESULTS:
+- Hospitals found: {hospital_count}
+- Top hospital: {top_hospital}
+- Comorbidity warnings: {warnings}
+
+Write a response with these sections in order:
+1. One empathetic opening line acknowledging their situation.
+2. If possible_causes exist, briefly mention the 2-3 likely causes.
+3. If this is an emergency, clearly say you are treating it as urgent.
+4. One sentence saying you are showing suitable hospitals next.
+5. If comorbidity warnings exist, mention them briefly.
+6. End with: "This is decision support only, not a medical diagnosis. Please consult a doctor."
+
+RULES:
+- Be warm but concise, max 5 sentences total
+- Use simple English, no medical jargon
+- Do NOT mention cost breakdown, loan eligibility, EMI, or financing
+- Do NOT suggest specific medications
+- Address the user by name
+- Return plain text only, no markdown, no bullet points
+"""
+
 def run_response_node(state: dict) -> dict:
     """
     Final node. Calls Gemini to write human-readable explanation.
@@ -119,12 +157,15 @@ def run_response_node(state: dict) -> dict:
 
         # Cost breakdown (shown after hospital selected)
         "cost_result":     cost_result,
+        "cost_results_by_hospital": state.get("cost_results_by_hospital", {}),
 
         # PFL financing
         "pfl_options":     pfl_options,
+        "pfl_options_by_hospital": state.get("pfl_options_by_hospital", {}),
 
         # Loan eligibility
         "loan_eligibility": loan_elig,
+        "loan_eligibility_by_hospital": state.get("loan_eligibility_by_hospital", {}),
 
         # Responsible AI
         "disclaimer":      "⚠️ This is decision support only — not a medical diagnosis. Costs are estimates and may vary. Please consult a qualified doctor before making medical decisions.",

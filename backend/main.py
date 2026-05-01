@@ -13,6 +13,7 @@ load_dotenv()
 from graph import run_graph
 from db import (
     save_user_profile, get_user_profile,
+    get_user_profile_by_email, hash_password, verify_password, to_uuid,
     save_user_financials, get_user_financials,
     save_document_metadata, get_user_documents,
     save_session, get_session,
@@ -47,6 +48,8 @@ class ChatRequest(BaseModel):
 
 class RegisterRequest(BaseModel):
     user_id:                 str
+    email:                   str
+    password:                Optional[str] = None
     name:                    str
     age:                     int
     gender:                  str
@@ -73,6 +76,10 @@ class LoanApplyRequest(BaseModel):
     loan_amount:   int
     tenure_months: int
 
+class LoginRequest(BaseModel):
+    email:    str
+    password: str
+
 # ══════════════════════════════════════════════════════════════════════════════
 # HEALTH CHECK
 # ══════════════════════════════════════════════════════════════════════════════
@@ -85,6 +92,32 @@ def root():
 def health():
     return {"status": "ok"}
 
+
+@app.get("/api/meta/cities")
+def get_cities():
+    """Return supported cities for registration."""
+    fallback_cities = [
+        "Mumbai", "Delhi", "Bengaluru", "Hyderabad", "Chennai",
+        "Kolkata", "Pune", "Ahmedabad", "Jaipur", "Lucknow",
+        "Nagpur", "Indore", "Coimbatore", "Surat", "Bhopal",
+    ]
+
+    try:
+        from data_loader import cities_df
+
+        cities = (
+            cities_df["city"]
+            .dropna()
+            .astype(str)
+            .sort_values()
+            .unique()
+            .tolist()
+        )
+        return {"cities": cities or fallback_cities}
+    except Exception as e:
+        print(f"Could not load cities from data source: {e}")
+        return {"cities": fallback_cities}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # REGISTRATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -93,10 +126,45 @@ def health():
 async def register(req: RegisterRequest):
     """Save user health profile."""
     profile = req.model_dump()
+
+    existing = get_user_profile_by_email(req.email)
+    request_uuid = to_uuid(req.user_id)
+    if existing and existing.get("user_id") != request_uuid:
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+
+    profile["email"] = req.email.strip().lower()
+    if req.password:
+        if len(req.password) < 8:
+            raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+        profile["password_hash"] = hash_password(req.password)
+    elif not existing:
+        raise HTTPException(status_code=400, detail="Password is required for new accounts")
+
     success = save_user_profile(req.user_id, profile)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to save profile")
-    return {"success": True, "message": "Profile saved successfully"}
+    return {"success": True, "message": "Profile saved successfully", "user_id": request_uuid}
+
+
+@app.post("/api/login")
+async def login(req: LoginRequest):
+    """Authenticate an existing MedPath profile."""
+    profile = get_user_profile_by_email(req.email, include_sensitive=True)
+    if not profile or not verify_password(req.password, profile.get("password_hash")):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    profile.pop("password_hash", None)
+    user_id = profile.get("user_id")
+    financials = get_user_financials(user_id)
+    documents = get_user_documents(user_id)
+
+    return {
+        "success": True,
+        "user_id": user_id,
+        "profile": profile,
+        "financials": financials,
+        "documents": documents,
+    }
 
 
 @app.get("/api/profile/{user_id}")
@@ -284,7 +352,7 @@ async def chat(req: ChatRequest):
     # Update conversation history
     history.append({
         "user":      req.message,
-        "assistant": result.get("explanation", ""),
+        "assistant": result.get("explanation") or result.get("question", ""),
     })
 
     # Save session — pass user_id so FK is satisfied
