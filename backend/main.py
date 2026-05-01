@@ -352,7 +352,7 @@ async def chat(req: ChatRequest):
     # Update conversation history
     history.append({
         "user":      req.message,
-        "assistant": result.get("explanation", ""),
+        "assistant": result.get("explanation") or result.get("question", ""),
     })
 
     # Save session — pass user_id so FK is satisfied

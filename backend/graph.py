@@ -36,6 +36,8 @@ class MedState(TypedDict, total=False):
     icd10_code:           Optional[str]
     symptom_summary:      str
     follow_up_answers:    dict
+    recommendation_ready: bool
+    emergency_confidence: float
 
     # Set by provider_node
     hospitals:            list
@@ -68,13 +70,15 @@ def route_after_intent(state: MedState) -> str:
     - If procedure known     → go to provider
     """
     is_emergency     = state.get("is_emergency", False)
+    emergency_conf   = state.get("emergency_confidence", 0.0)
+    ready            = state.get("recommendation_ready", False)
     ambiguity_score  = state.get("ambiguity_score", 0.0)
     clarify_attempts = state.get("clarify_attempts", 0)
 
-    if is_emergency:
+    if is_emergency and emergency_conf >= 0.85:
         return "provider"
 
-    if ambiguity_score > 0.6 and clarify_attempts < 2:
+    if (not ready or ambiguity_score > 0.6) and clarify_attempts < 3:
         return "clarify"
 
     return "provider"
@@ -165,6 +169,8 @@ async def run_graph(
         "nodes_visited":        [],
         "clarify_attempts":     0,
         "is_emergency":         False,
+        "recommendation_ready": False,
+        "emergency_confidence": 0.0,
         "ambiguity_score":      0.5,
         "hospitals":            [],
         "possible_causes":      [],
