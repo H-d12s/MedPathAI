@@ -513,7 +513,7 @@ async def chat(req: ChatRequest):
         "procedure":     result.get("procedure"),
         "city":          result.get("city"),
         "is_emergency":  result.get("is_emergency"),
-        "nodes_visited": result.get("graph_path", "").split(" → "),
+        "nodes_visited": result.get("graph_path", "").replace(" → ", " -> ").split(" -> "),
     })
 
     return {
@@ -672,7 +672,7 @@ async def pfl_decide(
 async def pfl_applications():
     """
     PFL officer dashboard — returns all applications newest first.
-    pfl_dashboard.html calls this every 3 seconds.
+    The React PFL dashboard polls this endpoint every 3 seconds.
     """
     applications = get_all_loan_applications()
     return {"applications": applications}

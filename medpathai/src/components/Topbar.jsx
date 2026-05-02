@@ -7,6 +7,7 @@ const PAGE_TITLES = {
   '/register':  'Health Profile',
   '/documents': 'My Documents',
   '/chat':      'MedPath Chat',
+  '/pfl-dashboard': 'PFL Officer Dashboard',
 }
 
 export default function TopBar() {

@@ -4,6 +4,7 @@ import Registration from './screens/Registrations'
 import Login from './screens/Login'
 import Documents from './screens/Documents'
 import Chat from './screens/Chats'
+import PFLDashboard from './screens/PFLDashboard'
 import { isRegistered } from './api/auth'
 
 // Guard: redirect to /login if not authenticated
@@ -25,6 +26,10 @@ export default function App() {
           <Route
             path="/chat"
             element={<RequireProfile><Chat /></RequireProfile>}
+          />
+          <Route
+            path="/pfl-dashboard"
+            element={<RequireProfile><PFLDashboard /></RequireProfile>}
           />
           <Route path="*" element={<Navigate to={isRegistered() ? '/chat' : '/login'} replace />} />
         </Route>

@@ -107,13 +107,13 @@ export default function EmergencyBanner({ hospitals = [] }) {
               <div style={{
                 fontSize: 'var(--text-sm)',
                 fontWeight: 'var(--weight-medium)',
-                color: 'var(--color-text-primary)',
+                color: '#111',
               }}>
                 Nearest recommended: {topHospital.hospital_name}
               </div>
               <div style={{
                 fontSize: 'var(--text-xs)',
-                color: 'var(--color-text-secondary)',
+                color: '#333',
                 marginTop: 2,
               }}>
                 {[

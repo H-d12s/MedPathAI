@@ -7,19 +7,19 @@ export default function PossibleCauses({ causes = [], icd10 }) {
 
   return (
     <div className="card" style={{
-      padding: '18px 20px',
-      borderRadius: 'var(--radius-xl)',
+      padding: '12px 14px',
+      borderRadius: 'var(--radius-lg)',
       boxShadow: 'var(--shadow-sm)',
     }}>
       <div style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 9,
-        marginBottom: signals.length ? 12 : 0,
+        gap: 7,
+        marginBottom: signals.length ? 8 : 0,
       }}>
-        <Stethoscope size={17} color="var(--teal-700)" />
+        <Stethoscope size={15} color="var(--teal-700)" />
         <h3 style={{
-          fontSize: 'var(--text-base)',
+          fontSize: 'var(--text-sm)',
           fontWeight: 700,
           letterSpacing: 0,
         }}>
@@ -27,7 +27,7 @@ export default function PossibleCauses({ causes = [], icd10 }) {
         </h3>
       </div>
       {signals.length > 0 && (
-        <div style={{ display: 'flex', gap: 9, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
           {signals.map((signal) => (
             <span
               key={signal}
@@ -35,8 +35,8 @@ export default function PossibleCauses({ causes = [], icd10 }) {
               style={{
                 border: '1px solid rgba(176, 200, 228, 0.35)',
                 borderRadius: 'var(--radius-full)',
-                padding: '6px 12px',
-                fontSize: 'var(--text-sm)',
+                padding: '4px 9px',
+                fontSize: 'var(--text-xs)',
                 fontWeight: 500,
                 letterSpacing: 0,
               }}
@@ -47,7 +47,7 @@ export default function PossibleCauses({ causes = [], icd10 }) {
         </div>
       )}
       {icd10 && (
-        <p style={{ marginTop: 10, fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
+        <p style={{ marginTop: 7, fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
           ICD-10 hint: <strong>{icd10}</strong>
         </p>
       )}
