@@ -1,10 +1,30 @@
-from typing import TypedDict, Optional
+from typing import Optional, TypedDict
 from langgraph.graph import StateGraph, END
 
-from nodes.intent   import run_intent_node
+from nodes.intent import run_intent_node
 from nodes.provider import run_provider_node
-from nodes.cost     import run_cost_node
+from nodes.cost import run_cost_node
 from nodes.response import run_response_node
+
+
+# Compatibility for older LangGraph with newer LangChain packages.
+try:
+    import langchain
+
+    if not hasattr(langchain, "debug"):
+        langchain.debug = False
+except Exception:
+    pass
+
+
+DEFAULT_SESSION_ID = "default"
+MAX_CLARIFY_ATTEMPTS = 3
+CLARIFICATION_MARKERS = (
+    "could you tell me more",
+    "describe the pain",
+    "describe your pain",
+)
+
 
 # ── MedState — shared state across all nodes ───────────────────────────────────
 class MedState(TypedDict, total=False):
@@ -66,7 +86,7 @@ def route_after_intent(state: MedState) -> str:
     """
     After intent_node:
     - If emergency           → skip clarification, go straight to provider
-    - If ambiguity is high    → ask up to two focused clarifying questions
+    - If ambiguity is high    → ask up to three focused clarifying questions
     - If procedure known     → go to provider
     """
     is_emergency     = state.get("is_emergency", False)
@@ -78,7 +98,12 @@ def route_after_intent(state: MedState) -> str:
     if is_emergency and emergency_conf >= 0.85:
         return "provider"
 
-    if (not ready or ambiguity_score > 0.7) and clarify_attempts < 2:
+    has_question = bool(state.get("clarifying_question"))
+
+    if has_question and clarify_attempts < MAX_CLARIFY_ATTEMPTS:
+        return "clarify"
+
+    if (not ready or ambiguity_score > 0.7) and clarify_attempts < MAX_CLARIFY_ATTEMPTS:
         return "clarify"
 
     return "provider"
@@ -107,6 +132,18 @@ def clarify_node(state: MedState) -> MedState:
 def route_after_clarify(state: MedState) -> str:
     """After clarify — always go back to intent with enriched context."""
     return "intent"
+
+
+def _count_previous_clarifications(conversation_history: list) -> int:
+    """Infer how many clarification turns already happened in this session."""
+    count = 0
+    for turn in conversation_history:
+        assistant_text = (turn.get("assistant") or "").lower()
+        if turn.get("type") == "clarification" or any(
+            marker in assistant_text for marker in CLARIFICATION_MARKERS
+        ):
+            count += 1
+    return count
 
 
 # ── Build the graph ────────────────────────────────────────────────────────────
@@ -160,34 +197,19 @@ async def run_graph(
     Main entry point called by FastAPI.
     Returns final_response dict.
     """
-    # Compatibility for older LangGraph with newer LangChain packages.
-    try:
-        import langchain
-        if not hasattr(langchain, "debug"):
-            langchain.debug = False
-    except Exception:
-        pass
-
-    previous_clarifications = 0
-    for turn in conversation_history or []:
-        assistant_text = (turn.get("assistant") or "").lower()
-        if (
-            turn.get("type") == "clarification"
-            or "could you tell me more" in assistant_text
-            or "describe the pain" in assistant_text
-            or "describe your pain" in assistant_text
-        ):
-            previous_clarifications += 1
+    user_profile = user_profile or {}
+    user_financials = user_financials or {}
+    conversation_history = conversation_history or []
 
     initial_state: MedState = {
         "user_input":           user_input,
-        "session_id":           session_id or "default",
-        "user_profile":         user_profile or {},
-        "user_financials":      user_financials or {},
-        "conversation_history": conversation_history or [],
+        "session_id":           session_id or DEFAULT_SESSION_ID,
+        "user_profile":         user_profile,
+        "user_financials":      user_financials,
+        "conversation_history": conversation_history,
         "selected_hospital":    selected_hospital,
         "nodes_visited":        [],
-        "clarify_attempts":     previous_clarifications,
+        "clarify_attempts":     _count_previous_clarifications(conversation_history),
         "is_emergency":         False,
         "recommendation_ready": False,
         "emergency_confidence": 0.0,
