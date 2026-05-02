@@ -149,12 +149,18 @@ Facts:
         print(f"Response Gemini error: {e}")
 
     urgent = " Please seek urgent medical care now." if state.get("is_emergency") else ""
+    signals_text = _format_list(causes)
+    reason_text = (
+        f" The main clinical signals are {signals_text}."
+        if signals_text
+        else ""
+    )
     if hospitals:
         hospital_text = f"I found {len(hospitals)} hospital option{'s' if len(hospitals) != 1 else ''} in {city}."
     else:
         hospital_text = f"I could not find a matching hospital in {city} in the current database."
     return (
-        f"{name}, based on what you shared, I have found care options for {procedure}.{urgent} "
+        f"{name}, based on what you shared, I have found care options for {procedure}.{reason_text}{urgent} "
         f"{hospital_text} This is care navigation support, not a medical diagnosis."
     )
 
